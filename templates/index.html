@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Persian RSVP Speed Reader</title>
+  <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+  <!-- Top Navigation / User Header -->
+  <header id="top-nav">
+    <div class="nav-brand">
+      <span class="logo-icon">⚡</span>
+      <span class="logo-text">تندخوان فارسی (RSVP)</span>
+    </div>
+    <div class="nav-user">
+      <!-- State: Logged out -->
+      <div id="auth-guest" class="user-group">
+        <button id="btn-auth-open" class="btn-nav">ورود / عضویت</button>
+      </div>
+      <!-- State: Logged in -->
+      <div id="auth-member" class="user-group hidden">
+        <button id="btn-library-open" class="btn-nav" title="متن‌های ذخیره‌شده">📚 کتابخانه من</button>
+        <button id="btn-save-text" class="btn-nav" title="ذخیره متن فعلی">💾 ذخیره متن</button>
+        <span id="user-display" class="user-badge"></span>
+        <button id="btn-logout" class="btn-nav btn-danger" title="خروج از حساب">خروج</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Reader (focus mode): fixed focal point, ORP tick at page center -->
+  <main id="reader">
+    <div id="focus-area">
+      <span id="word"></span>
+      <span id="orp-tick" aria-hidden="true"></span>
+    </div>
+  </main>
+
+  <!-- Status: progress + WPM -->
+  <div id="status" dir="ltr">
+    <span id="progress-text">0 / 0</span>
+    <span id="wpm-display">300 WPM</span>
+  </div>
+  <div id="progress-bar"><div id="progress-fill"></div></div>
+
+  <!-- Controls -->
+  <section id="controls">
+    <textarea id="input-text" rows="4" dir="auto" spellcheck="false" placeholder="متن خود را اینجا وارد کنید..."></textarea>
+    <div id="buttons">
+      <button id="btn-start" class="btn-action">Start</button>
+      <button id="btn-pause" class="btn-action">Pause</button>
+      <button id="btn-reset" class="btn-action">Reset</button>
+      <label for="wpm">WPM</label>
+      <input id="wpm" type="number" min="60" max="1200" step="10" value="300">
+      <input id="wpm-slider" type="range" min="60" max="1200" step="10" value="300" aria-label="WPM slider">
+      <label for="font-select">قلم</label>
+      <select id="font-select" class="select-control" aria-label="انتخاب قلم">
+        <option value="" selected>وزیرمتن (پیش‌فرض)</option>
+        <option value="Tahoma, Arial, sans-serif">تاهما</option>
+        <option value="system-ui, -apple-system, sans-serif">سیستم</option>
+      </select>
+    </div>
+    <p id="hints">Space: توقف/ادامه · کلیدهای ↑/↓: تنظیم سرعت (WPM) · کلید R: بازنشانی</p>
+  </section>
+
+  <!-- Authentication Modal -->
+  <div id="modal-auth" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-tabs">
+          <button id="tab-login" class="tab-btn active">ورود</button>
+          <button id="tab-register" class="tab-btn">ثبت‌نام</button>
+        </div>
+        <button id="btn-close-auth" class="btn-close" aria-label="بستن">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="auth-alert" class="alert hidden"></div>
+        
+        <!-- Login Form -->
+        <form id="form-login" class="auth-form">
+          <div class="form-group">
+            <label for="login-username">نام کاربری</label>
+            <input type="text" id="login-username" required autocomplete="username" dir="ltr">
+          </div>
+          <div class="form-group">
+            <label for="login-password">رمز عبور</label>
+            <input type="password" id="login-password" required autocomplete="current-password" dir="ltr">
+          </div>
+          <button type="submit" class="btn-submit">ورود به حساب</button>
+        </form>
+
+        <!-- Register Form -->
+        <form id="form-register" class="auth-form hidden">
+          <div class="form-group">
+            <label for="reg-username">نام کاربری</label>
+            <input type="text" id="reg-username" required autocomplete="username" minlength="3" dir="ltr" placeholder="حداقل ۳ حرف">
+          </div>
+          <div class="form-group">
+            <label for="reg-email">ایمیل (اختیاری)</label>
+            <input type="email" id="reg-email" autocomplete="email" dir="ltr" placeholder="example@domain.com">
+          </div>
+          <div class="form-group">
+            <label for="reg-password">رمز عبور</label>
+            <input type="password" id="reg-password" required autocomplete="new-password" minlength="6" dir="ltr" placeholder="حداقل ۶ نویسه">
+          </div>
+          <button type="submit" class="btn-submit">ایجاد حساب کاربری</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Library Modal -->
+  <div id="modal-library" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h3 class="modal-title">کتابخانه متن‌های ذخیره‌شده</h3>
+        <button id="btn-close-library" class="btn-close" aria-label="بستن">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="library-list" class="library-list">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="static/app.js"></script>
+</body>
+</html>
