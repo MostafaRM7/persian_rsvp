@@ -39,6 +39,24 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return encoded_jwt
 
 
+def decode_token_payload(token: str) -> dict:
+    """Decodes and validates JWT token payload, raising specific HTTPExceptions on failure."""
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="توکن منقضی شده است. لطفاً مجدداً وارد شوید.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="اعتبارسنجی ناموفق بود. توکن نامعتبر است.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 def decode_access_token(token: str) -> Optional[TokenData]:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -51,28 +69,51 @@ def decode_access_token(token: str) -> Optional[TokenData]:
 
 
 async def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> User:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="اعتبارسنجی ناموفق بود. لطفاً مجدداً وارد شوید.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
     if not token:
-        raise credentials_exception
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="اعتبارسنجی ناموفق بود. لطفاً مجدداً وارد شوید.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    token_data = decode_access_token(token)
-    if token_data is None or token_data.username is None:
-        raise credentials_exception
+    payload = decode_token_payload(token)
+    username = payload.get("sub")
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="اعتبارسنجی ناموفق بود. توکن نامعتبر است.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    user = await User.get_or_none(username=token_data.username)
+    user = await User.get_or_none(username=username)
     if user is None:
-        raise credentials_exception
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="کاربر یافت نشد.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return user
 
 
 async def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme)) -> Optional[User]:
     if not token:
         return None
-    token_data = decode_access_token(token)
-    if token_data is None or token_data.username is None:
-        return None
-    return await User.get_or_none(username=token_data.username)
+
+    payload = decode_token_payload(token)
+    username = payload.get("sub")
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="اعتبارسنجی ناموفق بود. توکن نامعتبر است.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = await User.get_or_none(username=username)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="کاربر یافت نشد.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
+

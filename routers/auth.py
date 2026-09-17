@@ -57,6 +57,12 @@ async def get_me(current_user: User = Depends(get_current_user)):
 async def update_me(update_data: UserUpdate, current_user: User = Depends(get_current_user)):
     if update_data.preferred_wpm is not None:
         current_user.preferred_wpm = update_data.preferred_wpm
+    if update_data.pause_intensity is not None:
+        current_user.pause_intensity = update_data.pause_intensity
+    if update_data.difficulty_tolerance is not None:
+        current_user.difficulty_tolerance = update_data.difficulty_tolerance
+    if update_data.personalization_enabled is not None:
+        current_user.personalization_enabled = update_data.personalization_enabled
     if update_data.email is not None:
         current_user.email = update_data.email
     await current_user.save()

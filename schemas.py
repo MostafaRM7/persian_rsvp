@@ -21,11 +21,19 @@ class UserOut(BaseModel):
     username: str
     email: Optional[str] = None
     preferred_wpm: int = 300
+    pause_intensity: float = 1.0
+    difficulty_tolerance: float = 0.0
+    personalization_enabled: bool = True
+    plan_tier: str = "free"
     created_at: datetime
+
 
 
 class UserUpdate(BaseModel):
     preferred_wpm: Optional[int] = Field(default=None, ge=60, le=1200)
+    pause_intensity: Optional[float] = Field(default=None, ge=0.5, le=1.5)
+    difficulty_tolerance: Optional[float] = Field(default=None, ge=-0.20, le=0.20)
+    personalization_enabled: Optional[bool] = None
     email: Optional[str] = None
 
 
@@ -62,4 +70,9 @@ class SavedTextOut(BaseModel):
     wpm: int
     created_at: datetime
     updated_at: datetime
+
+
+class ProgressUpdate(BaseModel):
+    last_position: int = Field(..., ge=0, description="Last read token position / offset")
+    wpm: Optional[int] = Field(default=None, ge=60, le=1200, description="Optional reading speed (WPM) during session")
 

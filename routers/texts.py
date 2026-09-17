@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from auth import get_current_user
 from models import SavedText, User
-from schemas import SavedTextCreate, SavedTextOut, SavedTextUpdate
+from schemas import ProgressUpdate, SavedTextCreate, SavedTextOut, SavedTextUpdate
 
 router = APIRouter(prefix="/api/texts", tags=["texts"])
 
@@ -62,3 +62,20 @@ async def delete_text(text_id: int, current_user: User = Depends(get_current_use
     if not text:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="متن مورد نظر پیدا نشد.")
     await text.delete()
+
+
+@router.patch("/{text_id}/progress", response_model=SavedTextOut)
+async def update_progress(
+    text_id: int,
+    progress_data: ProgressUpdate,
+    current_user: User = Depends(get_current_user),
+):
+    text = await SavedText.get_or_none(id=text_id, user=current_user)
+    if not text:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="متن مورد نظر پیدا نشد.")
+
+    text.last_position = progress_data.last_position
+    if progress_data.wpm is not None:
+        text.wpm = progress_data.wpm
+    await text.save()
+    return SavedTextOut.model_validate(text)

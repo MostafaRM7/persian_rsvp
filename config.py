@@ -16,4 +16,12 @@ if not SECRET_KEY:
     SECRET_KEY = "persian-rsvp-super-secret-key-change-in-production-32chars-min"
 
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  # 24 hours
+# Short-lived access token session duration (60 minutes per §12)
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+
+# Abuse protection (§12): only trust X-Forwarded-For when explicitly enabled.
+# Without a trusted proxy, clients can spoof X-Forwarded-For to mint fresh
+# identifiers and bypass anonymous quotas/rate limits. Deployments behind a
+# reverse proxy must set TRUST_PROXY_HEADERS=1 explicitly.
+TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "0") == "1"
+

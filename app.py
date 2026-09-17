@@ -1,24 +1,35 @@
-"""Persian RSVP Speed Reader — FastAPI backend with Tortoise ORM and JWT Authentication."""
-
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from tortoise.contrib.fastapi import register_tortoise
 
 from config import BASE_DIR
-from database import TORTOISE_ORM
+from database import TORTOISE_ORM, run_sqlite_migrations
 from routers.auth import router as auth_router
+from routers.billing import router as billing_router
 from routers.rsvp import router as rsvp_router
 from routers.texts import router as texts_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Run startup schema migrations per §12 & P2-2
+    await run_sqlite_migrations()
+    yield
+
 
 app = FastAPI(
     title="Persian RSVP Speed Reader",
     description="تندخوان هوشمند فارسی (RSVP) با احراز هویت JWT و پایگاه داده Tortoise ORM",
     version="1.0.0",
+    lifespan=lifespan,
 )
+
 
 # Include API routers
 app.include_router(auth_router)
+app.include_router(billing_router)
 app.include_router(rsvp_router)
 app.include_router(texts_router)
 
@@ -38,6 +49,7 @@ register_tortoise(
     generate_schemas=True,
     add_exception_handlers=True,
 )
+
 
 
 if __name__ == "__main__":
