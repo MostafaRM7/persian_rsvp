@@ -75,6 +75,10 @@ export class RSVPPlayer {
       });
 
       if (fetchGen !== this.fetchGeneration) {
+        // Superseded load: never leave the UI stuck on 'loading'
+        if (this.state === 'loading') {
+          this.setState('idle');
+        }
         return false;
       }
 
@@ -194,12 +198,10 @@ export class RSVPPlayer {
       this.resume();
       return;
     }
-    // UX Nit: If finished, restart from beginning
-    if (this.state === 'done') {
-      this.index = 0;
-    }
-
-    if (this.buffer.length() === 0) {
+    // Restart from the beginning with a fresh plan (P3-15): after playback the
+    // buffer may hold only the last chunk (post-prefetch / WPM refetch), so a
+    // bare index reset would replay just that chunk with a stale progress bar.
+    if (this.state === 'done' || this.buffer.length() === 0) {
       const loaded = await this.loadPlan(this.currentText, this.currentTextId);
       if (!loaded) return;
     }
@@ -271,8 +273,17 @@ export class RSVPPlayer {
   async setWpm(newWpm) {
     this.wpm = Math.max(60, Math.min(1200, Math.round(newWpm)));
 
+    // P3-16: while the initial load is in flight, bump the generation so the
+    // pending fetch (dispatched with the old WPM) is discarded on arrival
+    // instead of installing a stale-wpm buffer. Must be checked BEFORE the
+    // empty-buffer guard: the buffer is empty while loading.
+    if (this.state === 'loading') {
+      this.fetchGeneration++;
+      return;
+    }
+
     // Do NOT refetch when there is no buffer (loadPlan hasn't run)
-    if (this.buffer.length() === 0 || this.state === 'loading') {
+    if (this.buffer.length() === 0) {
       return;
     }
 

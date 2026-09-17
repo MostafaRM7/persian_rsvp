@@ -18,10 +18,13 @@ export class WordRenderer {
     this.currentFontKey = '';
     this.metricsCache = new Map(); // Key: `${fontKey}:${word}:${orp}` -> { dx, relLeft, relRight }
     this.maxCacheSize = 500;
+    this._disposers = []; // P3-11: every listener gets a teardown function
 
     if (typeof window !== 'undefined') {
       // 1. Invalidate cached dimensions when viewport resizes
-      window.addEventListener('resize', () => this.invalidateCache());
+      const onResize = () => this.invalidateCache();
+      window.addEventListener('resize', onResize);
+      this._disposers.push(() => window.removeEventListener('resize', onResize));
 
       // 2. Invalidate on Zoom / DPI (devicePixelRatio) resolution changes
       this._setupDprListener();
@@ -30,7 +33,9 @@ export class WordRenderer {
       if (typeof document !== 'undefined' && document.fonts) {
         document.fonts.ready.then(() => this.invalidateCache()).catch(() => {});
         if (document.fonts.addEventListener) {
-          document.fonts.addEventListener('loadingdone', () => this.invalidateCache());
+          const onLoadingDone = () => this.invalidateCache();
+          document.fonts.addEventListener('loadingdone', onLoadingDone);
+          this._disposers.push(() => document.fonts.removeEventListener('loadingdone', onLoadingDone));
         }
       }
 
@@ -38,6 +43,7 @@ export class WordRenderer {
       if (typeof ResizeObserver !== 'undefined' && this.focusEl) {
         this.resizeObserver = new ResizeObserver(() => this.invalidateCache());
         this.resizeObserver.observe(this.focusEl);
+        this._disposers.push(() => this.resizeObserver.disconnect());
       }
     }
   }
@@ -47,6 +53,11 @@ export class WordRenderer {
     const dpr = window.devicePixelRatio || 1;
     const mq = window.matchMedia(`(resolution: ${dpr}dppx)`);
     const handler = () => {
+      // Legacy addListener has no {once:true}: self-remove so stale mq handlers
+      // cannot accumulate and multiply re-arms across DPR changes (P3-11 leak).
+      if (mq.removeListener) {
+        try { mq.removeListener(handler); } catch (e) { /* noop */ }
+      }
       this.invalidateCache();
       this._setupDprListener();
     };
@@ -55,6 +66,28 @@ export class WordRenderer {
     } else if (mq.addListener) {
       mq.addListener(handler);
     }
+    this._dprTeardown = () => {
+      if (mq.removeEventListener) {
+        try { mq.removeEventListener('change', handler); } catch (e) { /* noop */ }
+      } else if (mq.removeListener) {
+        try { mq.removeListener(handler); } catch (e) { /* noop */ }
+      }
+    };
+    this._disposers.push(this._dprTeardown);
+  }
+
+  /** Removes every global listener and observer (P3-11). Idempotent. */
+  dispose() {
+    for (const teardown of this._disposers) {
+      try { teardown(); } catch (e) { /* noop */ }
+    }
+    this._disposers = [];
+    this._dprTeardown = null;
+    if (this.resizeObserver) {
+      try { this.resizeObserver.disconnect(); } catch (e) { /* noop */ }
+      this.resizeObserver = null;
+    }
+    this.invalidateCache();
   }
 
   getFontKey() {
