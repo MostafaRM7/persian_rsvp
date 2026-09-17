@@ -9,9 +9,9 @@ Rules:
 """
 
 import math
+from rsvp_engine.constants import ALL_PUNCTUATION_CHARS, ZWNJ
 
-ZWNJ = "\u200c"
-PUNCTUATION_CHARS = set(".!?؟…،؛:;,—–-\"\'()[]{}«»‹›\n")
+PUNCTUATION_CHARS = ALL_PUNCTUATION_CHARS
 
 
 def calculate_orp(word: str) -> int:

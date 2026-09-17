@@ -10,7 +10,7 @@ from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
-ENGINE_VERSION = "2026.06.1"
+ENGINE_VERSION = "2026.08.1"
 
 
 class EngineInput(BaseModel):

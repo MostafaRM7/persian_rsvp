@@ -219,7 +219,16 @@ def normalize_text(text: str) -> str:
     text = re.sub(r"(?<=[۰-۹0-9]),(?=[۰-۹0-9]{1,2}(?:[^\d۰-۹]|$))", "\u066b", text)
 
     # Normalize decimal point between digits (e.g. ۳.۱۴) to Persian decimal separator ٫ (\u066b)
+    # P3-17: dotted technical identifiers (IPv4 like 192.168.1.1) are shielded from
+    # decimal conversion — a full dotted-quad is never a decimal number. Runs after
+    # digit conversion, so both ASCII and Persian digit forms are matched.
+    text = re.sub(
+        r"(?<![0-9۰-۹.])([۰-۹0-9]{1,3}\.[۰-۹0-9]{1,3}\.[۰-۹0-9]{1,3}\.[۰-۹0-9]{1,3})(?![۰-۹0-۹.])",
+        lambda m: m.group(1).replace(".", "\u2060"),
+        text,
+    )
     text = re.sub(r"(?<=[۰-۹0-9])\.(?=[۰-۹0-9])", "\u066b", text)
+    text = text.replace("\u2060", ".")
 
     # Normalize percent signs to canonical form (Number + ٪, e.g. ۲۵٪)
     text = re.sub(r"٪\s*([۰-۹0-9]+)", r"\1٪", text)

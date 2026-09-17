@@ -9,11 +9,13 @@ Provides rule-based, deterministic syntactic and semantic boundary detection:
 
 from typing import Optional, Tuple
 
-ZWNJ = "\u200c"
-
-STRONG_PUNCTUATION = set(".!?؟…\n")
-WEAK_PUNCTUATION = set("،؛:;,—–-")
-CLOSING_BRACKETS_QUOTES = set("»)]}\"'")
+from rsvp_engine.constants import (
+    ALL_PUNCTUATION_CHARS,
+    CLOSING_BRACKETS_QUOTES,
+    STRONG_PUNCTUATION,
+    WEAK_PUNCTUATION,
+    ZWNJ,
+)
 
 # Persian Subordinating Conjunctions (حروف ربط وابسته ساز)
 # Words introducing dependent clauses where the preceding constituent marks a clause boundary
@@ -69,21 +71,13 @@ SPEECH_VERBS = {
     "افزود", "افزودند", "فرمود",
 }
 
-# Finite auxiliary / copular / predicate verbs commonly ending an internal clause before coordinating 'و' / 'یا'
-FINITE_PREDICATE_VERBS = {
-    "بود", "شد", "گشت", "رفت", "آمد", "کرد", "داد", "داشت", "یافت",
-    "خواند", "دید", "ماند", "رسید", "افتاد", "گذشت", "ساخت", "توانست",
-    "دانست", "خواست", "یافته", "کرده", "داده", "رفته", "آمده", "خوانده",
-    "دیده", "گفته", "می‌دانست", "می‌دانند", "می‌کند", "می‌کنند",
-    "می‌رود", "می‌روند", "می‌دهد", "می‌دهند",
-}
-
 
 def clean_core_token(word: Optional[str]) -> str:
     """Strips punctuation and whitespace from a word token."""
     if not word:
         return ""
-    return word.strip(".!?؟…،؛:;,—–-\"\'()[]{}«»‹›\n\u200c ")
+    strip_chars = "".join(ALL_PUNCTUATION_CHARS) + " \t\u200c"
+    return word.strip(strip_chars)
 
 
 def is_sentence_boundary(word: str) -> bool:
