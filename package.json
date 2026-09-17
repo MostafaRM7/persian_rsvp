@@ -1,0 +1,12 @@
+{
+  "name": "persian-rsvp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Persian RSVP Speed Reader — client test runner",
+  "scripts": {
+    "test": "node test_renderer.mjs && node test_player_wpm.mjs",
+    "test:renderer": "node test_renderer.mjs",
+    "test:player": "node test_player_wpm.mjs",
+    "syntax": "node --check static/rsvp/api.js && node --check static/rsvp/buffer.js && node --check static/rsvp/renderer.js && node --check static/rsvp/timer.js && node --check static/rsvp/player.js && node --check static/app.js"
+  }
+}

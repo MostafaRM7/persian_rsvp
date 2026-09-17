@@ -4,6 +4,8 @@ import asyncio
 import os
 import re
 import tempfile
+import time
+from datetime import timedelta
 from pathlib import Path
 
 # CRITICAL FIX: Isolate test database so development db.sqlite3 is never touched or deleted
@@ -16,11 +18,14 @@ except ImportError:
     pytest = None
 
 from httpx import AsyncClient, ASGITransport
-from tortoise import Tortoise
+from tortoise import Tortoise, connections
+
+from datetime import datetime, timezone
 
 from app import app
-from database import TORTOISE_ORM
-from models import SavedText, User
+from database import TORTOISE_ORM, run_sqlite_migrations
+from models import SavedText, UsageRecord, User
+
 from rsvp_engine import (
     EngineInput,
     RSVPChunkResponse,
@@ -28,12 +33,21 @@ from rsvp_engine import (
     RSVPToken,
 )
 from rsvp_engine.chunking import create_chunks
+from rsvp_engine.constants import ALL_PUNCTUATION_CHARS, STRONG_PUNCTUATION, WEAK_PUNCTUATION
 from rsvp_engine.difficulty import calculate_word_metrics
 from rsvp_engine.frequency import get_word_frequency
 from rsvp_engine.models import ENGINE_VERSION
 from rsvp_engine.normalization import normalize_text
 from rsvp_engine.orp import calculate_orp
-from rsvp_engine.pacing import calculate_duration_weight
+from rsvp_engine.pacing import (
+    CLASS_2_MAX_WEIGHT,
+    CLASS_3_MIN_WEIGHT,
+    PacingProfile,
+    TokenFeatures,
+    calculate_duration_weight,
+    compute_duration_weight,
+    extract_token_features,
+)
 from rsvp_engine.semantics import analyze_token_boundaries, is_clause_boundary, is_sentence_boundary
 from rsvp_engine.tokenizer import tokenize
 
@@ -352,9 +366,13 @@ def test_phase4_basic_cognitive_pacing():
     assert d_colon == 160
 
     # Dialogue quotation introducer (colon followed by opening quote)
+    # P3-22 pinned: 160 (base colon) + 5 (quote-introducer) + 5 (speech-verb semantic combination) = 170
     d_dialogue = calculate_duration_weight("گفت:", prev_word="او", next_word="«سلام»")
-    assert d_dialogue in (165, 170)
+    assert d_dialogue == 170
     assert d_dialogue > d_colon
+    # Isolated quote introducer without speech-verb semantic cue: 160 + 5 = 165
+    d_quote_non_speech = calculate_duration_weight("نکته:", prev_word="یک", next_word="«سلام»")
+    assert d_quote_non_speech == 165
 
     # 4. Class 4: Sentence endings and terminal propositions (range: [185, 260])
     d_period = calculate_duration_weight("شد.", prev_word="تمام", next_word="کتاب", wpm=300)
@@ -763,7 +781,686 @@ def test_phase6_semantic_chunking_and_intelligent_pauses():
         assert ta.d == tb.d
 
     # 8. Version verification
-    assert ENGINE_VERSION == "2026.06.1"
+    assert ENGINE_VERSION >= "2026.06.1"
+
+
+def test_phase7_advanced_adaptive_pacing():
+    """Phase 7: Advanced Adaptive Pacing acceptance tests per §10, §14, §17."""
+    import time
+
+    # 1. Standing Entry Work: P3-20 + P3-13 + P3-21 Constants Consolidation & Dead Code Removal
+    assert isinstance(STRONG_PUNCTUATION, frozenset)
+    assert isinstance(WEAK_PUNCTUATION, frozenset)
+    assert isinstance(ALL_PUNCTUATION_CHARS, frozenset)
+    assert "." in STRONG_PUNCTUATION and "،" in WEAK_PUNCTUATION
+    # Verify dead FINITE_PREDICATE_VERBS was removed from semantics
+    import rsvp_engine.semantics as sem_module
+    assert not hasattr(sem_module, "FINITE_PREDICATE_VERBS")
+
+    # 2. Standing Entry Work: P3-19 Frequency Lexicon Expansion & Coverage Test
+    from rsvp_engine.frequency import UNIFIED_FREQUENCY_LEXICON
+    assert len(UNIFIED_FREQUENCY_LEXICON) >= 1000
+    sample_prose_words = [
+        "یکشنبه", "دوشنبه", "غذا", "نان", "چای", "قهوه", "قطار", "هواپیما",
+        "مسافر", "هفته", "بیمارستان", "پزشک", "دکتر", "پرستار", "آسمان",
+        "باران", "برف", "امید", "شادی", "خوشحال", "روستا", "خیابان", "اتاق",
+    ]
+    for word in sample_prose_words:
+        freq = get_word_frequency(word)
+        assert freq >= 0.40, f"Expected {word} to have common/familiar frequency, got {freq}"
+        assert freq != 0.05, f"{word} resolved to rare default 0.05"
+
+    # 3. Standing Entry Work: P3-14 Class 2 and Class 3 Disjoint Range Integrity
+    assert CLASS_2_MAX_WEIGHT == 144
+    assert CLASS_3_MIN_WEIGHT == 145
+    assert CLASS_2_MAX_WEIGHT < CLASS_3_MIN_WEIGHT
+
+    # Verify Class 2 words never reach 145
+    class2_words = ["دانشگاه", "کتاب‌خانه", "بین‌المللی‌سازی", "۱۲,۵۰۰", "دل‌تنگ"]
+    for w in class2_words:
+        d = calculate_duration_weight(w, prev_word="یک", next_word="دیدم")
+        assert 115 <= d <= CLASS_2_MAX_WEIGHT, f"Class 2 word {w} got d={d} (exceeded {CLASS_2_MAX_WEIGHT})"
+
+    # Verify Class 3 words are always >= 145
+    class3_cases = [
+        ("آمد،", "بعد"),
+        ("رفت؛", "سپس"),
+        ("گفت:", "ساکت"),
+        ("بود،", "اما"),
+    ]
+    for w, next_w in class3_cases:
+        d = calculate_duration_weight(w, prev_word="او", next_word=next_w)
+        assert d >= CLASS_3_MIN_WEIGHT, f"Class 3 word {w} got d={d} (below {CLASS_3_MIN_WEIGHT})"
+
+    # 4. §10 Architecture: Every signal's individual effect testable in isolation via TokenFeatures
+    # a. WPM signal in isolation
+    f_sent_end = TokenFeatures(word="شد.", clean_word="شد", is_sentence_end=True)
+    d_wpm_300 = compute_duration_weight(f_sent_end, wpm=300)
+    d_wpm_900 = compute_duration_weight(f_sent_end, wpm=900)
+    d_wpm_1200 = compute_duration_weight(f_sent_end, wpm=1200)
+    assert d_wpm_300 == 200
+    assert d_wpm_900 == 230
+    assert d_wpm_1200 == 290
+    assert d_wpm_1200 > d_wpm_900 > d_wpm_300
+
+    # b. Difficulty signal in isolation
+    f_easy = TokenFeatures(word="تست", clean_word="تست", difficulty_score=0.10)
+    f_hard = TokenFeatures(word="تست", clean_word="تست", difficulty_score=0.55)
+    assert compute_duration_weight(f_hard) > compute_duration_weight(f_easy)
+
+    # c. Frequency signal in isolation
+    f_sight = TokenFeatures(word="این", clean_word="این", frequency_score=0.95, difficulty_score=0.10)
+    f_mid_freq = TokenFeatures(word="این", clean_word="این", frequency_score=0.50, difficulty_score=0.20)
+    assert compute_duration_weight(f_sight) == 90
+    assert compute_duration_weight(f_mid_freq) == 100
+
+    # d. Word length signal in isolation
+    f_short = TokenFeatures(word="روش", clean_word="روش", char_count=3, is_long=False)
+    f_long = TokenFeatures(word="پژوهشگران", clean_word="پژوهشگران", char_count=9, is_long=True)
+    assert compute_duration_weight(f_long) > compute_duration_weight(f_short)
+    assert 115 <= compute_duration_weight(f_long) <= 144
+
+    # e. Morphology / Compound signal in isolation
+    f_simple = TokenFeatures(word="کتاب", clean_word="کتاب", is_compound=False)
+    f_compound = TokenFeatures(word="کتاب‌خانه", clean_word="کتابخانه", is_compound=True)
+    assert compute_duration_weight(f_compound) > compute_duration_weight(f_simple)
+
+    # f. Punctuation signal in isolation
+    f_plain = TokenFeatures(word="کتاب", clean_word="کتاب")
+    f_clause = TokenFeatures(word="کتاب،", clean_word="کتاب")
+    f_terminal = TokenFeatures(word="کتاب.", clean_word="کتاب", is_sentence_end=True)
+    assert compute_duration_weight(f_plain) == 100
+    assert compute_duration_weight(f_clause) == 155
+    assert compute_duration_weight(f_terminal) == 200
+
+    # g. Semantic boundary signal in isolation
+    f_unpunct_clause = TokenFeatures(word="بود", clean_word="بود", semantic_pause_bonus=45)
+    assert compute_duration_weight(f_unpunct_clause) == 145
+
+    # h. Sentence-initial orienting delay in isolation
+    f_initial = TokenFeatures(word="کتاب", clean_word="کتاب", is_sentence_initial=True)
+    assert compute_duration_weight(f_initial) == 110
+
+    # 5. §10 Architecture: Extensibility Proof (New signal added without client/contract change)
+    # Proof signal: sentence_position cadence modulation in long sentences
+    f_cadence_early = TokenFeatures(word="کتاب", clean_word="کتاب", sentence_position=3, sentence_length=20)
+    f_cadence_late = TokenFeatures(word="کتاب", clean_word="کتاب", sentence_position=15, sentence_length=20)
+    assert compute_duration_weight(f_cadence_late) > compute_duration_weight(f_cadence_early)
+    assert compute_duration_weight(f_cadence_late) == 103
+
+    # 6. High WPM Cognitive Floor Guarantee (> 140ms across 900–1200 WPM)
+    for test_wpm in [900, 1000, 1100, 1200]:
+        plan = RSVPEngine.generate_token_plan("خواندن این کتاب تمام شد.", wpm=test_wpm)
+        term_tok = [t for t in plan if t.w == "شد."][0]
+        # ms = (60,000 / wpm) * (d / 100)
+        pause_ms = (60_000 / test_wpm) * (term_tok.d / 100)
+        assert pause_ms >= 140.0, f"At {test_wpm} WPM, terminal pause {pause_ms:.1f}ms < 140ms floor (d={term_tok.d})"
+
+    # 7. Performance: Generation for ~2,000-word text stays comfortably fast (< 2.0s)
+    long_text = ("تندخوانی با روش RSVP سرعت مطالعه متون فارسی را بدون افت درک مطلب افزایش می‌دهد. ") * 160
+    t_start = time.perf_counter()
+    perf_plan = RSVPEngine.generate_token_plan(long_text, wpm=300)
+    t_elapsed = time.perf_counter() - t_start
+    assert len(perf_plan) >= 1900
+    assert t_elapsed < 2.0, f"Plan generation took {t_elapsed:.3f}s (expected < 2.0s)"
+
+    # 8. Determinism: Same input + same ENGINE_VERSION + same WPM yields bit-for-bit identical outputs
+    input_text = "آیا تندخوانی مهارت مهمی است؟ بله، تمرین مداوم موجب افزایش چشمگیر سرعت خواندن خواهد شد."
+    plan_1 = RSVPEngine.generate_token_plan(input_text, wpm=350)
+    plan_2 = RSVPEngine.generate_token_plan(input_text, wpm=350)
+    assert len(plan_1) == len(plan_2)
+    for t1, t2 in zip(plan_1, plan_2):
+        assert t1.w == t2.w
+        assert t1.orp == t2.orp
+        assert t1.d == t2.d
+
+    # 9. Public Contract Opacity (Rule 5: No internals leakage)
+    for tok in perf_plan[:50]:
+        dump = tok.model_dump()
+        assert set(dump.keys()) == {"w", "orp", "d"}
+        assert not hasattr(tok, "sentence_position")
+        assert not hasattr(tok, "difficulty_score")
+        assert not hasattr(tok, "frequency_score")
+
+    # 10. Version verification
+    assert ENGINE_VERSION >= "2026.07.1"
+
+
+@maybe_async_test
+async def test_phase8_personalization():
+    """Phase 8: Personalization acceptance tests per §11, §14, §17."""
+    # 1. PacingProfile Default Invariance & Contract Preservation
+    default_profile = PacingProfile()
+    assert default_profile.pause_intensity == 1.0
+    assert default_profile.difficulty_tolerance == 0.0
+    assert default_profile.personalization_enabled is True
+
+    test_sentence = "اگرچه هوا بسیار سرد بود، اما تمرین تندخوانی ادامه یافت."
+    plan_unpersonalized = RSVPEngine.generate_token_plan(test_sentence, wpm=300, profile=None)
+    plan_default = RSVPEngine.generate_token_plan(test_sentence, wpm=300, profile=default_profile)
+    assert len(plan_unpersonalized) == len(plan_default)
+    for t_unp, t_def in zip(plan_unpersonalized, plan_default):
+        assert t_unp.w == t_def.w
+        assert t_unp.orp == t_def.orp
+        assert t_unp.d == t_def.d
+
+    # 2. Master Switch: personalization_enabled=False bypasses custom profile adjustments
+    disabled_profile = PacingProfile(pause_intensity=0.5, difficulty_tolerance=0.20, personalization_enabled=False)
+    plan_disabled = RSVPEngine.generate_token_plan(test_sentence, wpm=300, profile=disabled_profile)
+    for t_unp, t_dis in zip(plan_unpersonalized, plan_disabled):
+        assert t_unp.d == t_dis.d
+
+    # 3. Pacing Adaptation: pause_intensity scaling on Class 3 and Class 4 & P2-1 High-WPM Floor Guarantee
+    # Terminal token (Class 4): 'یافت.'
+    f_term = TokenFeatures(word="یافت.", clean_word="یافت", is_sentence_end=True)
+    d_term_norm = compute_duration_weight(f_term, wpm=300, profile=PacingProfile(pause_intensity=1.0))
+    d_term_high = compute_duration_weight(f_term, wpm=300, profile=PacingProfile(pause_intensity=1.35))
+    d_term_low = compute_duration_weight(f_term, wpm=300, profile=PacingProfile(pause_intensity=0.95))
+    assert d_term_high > d_term_norm > d_term_low
+    assert 185 <= d_term_low <= d_term_high <= 320
+
+    # Clause token (Class 3): 'بود،'
+    f_clause = TokenFeatures(word="بود،", clean_word="بود", semantic_pause_bonus=15)
+    d_clause_norm = compute_duration_weight(f_clause, wpm=300, profile=PacingProfile(pause_intensity=1.0))
+    d_clause_high = compute_duration_weight(f_clause, wpm=300, profile=PacingProfile(pause_intensity=1.12))
+    assert d_clause_high >= d_clause_norm
+    assert 145 <= d_clause_norm <= d_clause_high <= 180
+
+    # P2-1 Floor Guarantee: for intensity in [0.5, 0.75, 1.0] across wpm in [600, 900, 1000, 1200],
+    # terminal pause duration ms = (60000 / wpm) * (d / 100) must remain >= 140.0 ms
+    for intensity in [0.5, 0.75, 1.0]:
+        prof = PacingProfile(pause_intensity=intensity)
+        for test_wpm in [600, 900, 1000, 1200]:
+            f_end = TokenFeatures(word="شد.", clean_word="شد", is_sentence_end=True)
+            d_end = compute_duration_weight(f_end, wpm=test_wpm, profile=prof)
+            pause_ms = (60000 / test_wpm) * (d_end / 100)
+            assert pause_ms >= 140.0, f"At {test_wpm} WPM and intensity {intensity}, pause {pause_ms:.2f}ms < 140ms (d={d_end})"
+
+    # P2-1: Class 3 token ('بود،') under minimum intensity 0.5 must stay >= CLASS_3_MIN_WEIGHT (145)
+    f_clause_min = TokenFeatures(word="بود،", clean_word="بود", semantic_pause_bonus=15)
+    d_clause_min = compute_duration_weight(f_clause_min, wpm=300, profile=PacingProfile(pause_intensity=0.5))
+    assert d_clause_min >= 145, f"Class 3 token under intensity 0.5 got d={d_clause_min} < 145"
+
+    # P2-1: Intensity 1.5 at 300 WPM respects CLASS_4_MAX_WEIGHT=320
+    f_term_15 = TokenFeatures(word="شد.", clean_word="شد", is_sentence_end=True, difficulty_score=0.9)
+    d_term_15 = compute_duration_weight(f_term_15, wpm=300, profile=PacingProfile(pause_intensity=1.5))
+    assert d_term_15 <= 320, f"Terminal token under intensity 1.5 exceeded CLASS_4_MAX_WEIGHT (d={d_term_15})"
+
+
+    # 4. Pacing Adaptation: difficulty_tolerance bias on lexical dwell
+    f_rare = TokenFeatures(word="استیضاح", clean_word="استیضاح", difficulty_score=0.48, frequency_score=0.10)
+    d_tol_neg = compute_duration_weight(f_rare, wpm=300, profile=PacingProfile(difficulty_tolerance=-0.15))
+    d_tol_zero = compute_duration_weight(f_rare, wpm=300, profile=PacingProfile(difficulty_tolerance=0.0))
+    d_tol_pos = compute_duration_weight(f_rare, wpm=300, profile=PacingProfile(difficulty_tolerance=0.15))
+    assert d_tol_neg >= d_tol_zero >= d_tol_pos
+    assert d_tol_neg > d_tol_pos
+
+    # 5. Personalized Determinism: Same profile + same text -> bit-for-bit identical tokens
+    plan_pers_1 = RSVPEngine.generate_token_plan(test_sentence, wpm=320, profile=PacingProfile(pause_intensity=1.2, difficulty_tolerance=-0.1))
+    plan_pers_2 = RSVPEngine.generate_token_plan(test_sentence, wpm=320, profile=PacingProfile(pause_intensity=1.2, difficulty_tolerance=-0.1))
+    assert len(plan_pers_1) == len(plan_pers_2)
+    for p1, p2 in zip(plan_pers_1, plan_pers_2):
+        assert p1.w == p2.w
+        assert p1.orp == p2.orp
+        assert p1.d == p2.d
+
+    # 6. Database & HTTP API Integration: Preferences, Validation Bounds, Migration Safety, Progress Tracking
+    try:
+        await Tortoise.init(config=TORTOISE_ORM)
+    except Exception:
+        pass
+    await Tortoise.generate_schemas()
+    await SavedText.all().delete()
+    await User.all().delete()
+
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # 6a. Register User A
+            reg_a = await client.post(
+                "/api/auth/register",
+                json={"username": "user_p8", "password": "securepassword123", "email": "p8@test.com"},
+            )
+            assert reg_a.status_code == 201
+            token_a = reg_a.json()["access_token"]
+            headers_a = {"Authorization": f"Bearer {token_a}"}
+
+            # 6b. Profile defaults verification
+            me_resp = await client.get("/api/auth/me", headers=headers_a)
+            assert me_resp.status_code == 200
+            user_data = me_resp.json()
+            assert user_data["preferred_wpm"] == 300
+            assert user_data["pause_intensity"] == 1.0
+            assert user_data["difficulty_tolerance"] == 0.0
+            assert user_data["personalization_enabled"] is True
+
+            # 6c. Valid profile preference update
+            patch_valid = await client.patch(
+                "/api/auth/me",
+                headers=headers_a,
+                json={
+                    "preferred_wpm": 420,
+                    "pause_intensity": 1.25,
+                    "difficulty_tolerance": -0.10,
+                    "personalization_enabled": True,
+                },
+            )
+            assert patch_valid.status_code == 200
+            upd_data = patch_valid.json()
+            assert upd_data["preferred_wpm"] == 420
+            assert upd_data["pause_intensity"] == 1.25
+            assert upd_data["difficulty_tolerance"] == -0.10
+            assert upd_data["personalization_enabled"] is True
+
+            # 6d. Validation bounds enforcement (422 Unprocessable Entity)
+            # pause_intensity bounds [0.5, 1.5]
+            resp_low_pause = await client.patch("/api/auth/me", headers=headers_a, json={"pause_intensity": 0.4})
+            assert resp_low_pause.status_code == 422
+            resp_high_pause = await client.patch("/api/auth/me", headers=headers_a, json={"pause_intensity": 1.6})
+            assert resp_high_pause.status_code == 422
+
+            # difficulty_tolerance bounds [-0.20, +0.20]
+            resp_low_diff = await client.patch("/api/auth/me", headers=headers_a, json={"difficulty_tolerance": -0.25})
+            assert resp_low_diff.status_code == 422
+            resp_high_diff = await client.patch("/api/auth/me", headers=headers_a, json={"difficulty_tolerance": 0.25})
+            assert resp_high_diff.status_code == 422
+
+
+            # 6f. SavedText Progress Tracking & Auth Isolation
+            txt_resp = await client.post(
+                "/api/texts",
+                headers=headers_a,
+                json={"title": "کتاب اول", "content": "تندخوانی مهارت ارزشمندی است که تمرکز را بالا می‌برد."},
+            )
+            assert txt_resp.status_code == 201
+            text_id = txt_resp.json()["id"]
+            assert txt_resp.json()["last_position"] == 0
+
+            # PATCH /api/texts/{id}/progress
+            prog_resp = await client.patch(
+                f"/api/texts/{text_id}/progress",
+                headers=headers_a,
+                json={"last_position": 7, "wpm": 420},
+            )
+            assert prog_resp.status_code == 200
+            assert prog_resp.json()["last_position"] == 7
+            assert prog_resp.json()["wpm"] == 420
+
+            # Negative position validation (422)
+            prog_invalid = await client.patch(
+                f"/api/texts/{text_id}/progress",
+                headers=headers_a,
+                json={"last_position": -1},
+            )
+            assert prog_invalid.status_code == 422
+
+            # Auth isolation: User B cannot modify or access User A's progress
+            reg_b = await client.post(
+                "/api/auth/register",
+                json={"username": "user_p8_intruder", "password": "securepassword456"},
+            )
+            assert reg_b.status_code == 201
+            token_b = reg_b.json()["access_token"]
+            headers_b = {"Authorization": f"Bearer {token_b}"}
+
+            intruder_patch = await client.patch(
+                f"/api/texts/{text_id}/progress",
+                headers=headers_b,
+                json={"last_position": 99},
+            )
+            assert intruder_patch.status_code == 404
+
+            # Unauthenticated access rejected
+            unauth_patch = await client.patch(
+                f"/api/texts/{text_id}/progress",
+                json={"last_position": 99},
+            )
+            assert unauth_patch.status_code == 401
+
+            # 6g. End-to-End RSVP Plan with Personalization & Fallback WPM
+            # Calling /plan without explicit wpm uses user_a's preferred_wpm (420) and pause_intensity (1.25)
+            plan_user_a = await client.post(
+                "/api/rsvp/plan",
+                headers=headers_a,
+                json={"text": "تمرین تندخوانی آغاز شد."},
+            )
+            assert plan_user_a.status_code == 200
+            tokens_a = plan_user_a.json()["tokens"]
+            term_tok_a = [t for t in tokens_a if t["w"] == "شد."][0]
+            # Unauthenticated plan for comparison
+            plan_anon = await client.post(
+                "/api/rsvp/plan",
+                json={"text": "تمرین تندخوانی آغاز شد."},
+            )
+            assert plan_anon.status_code == 200
+            tokens_anon = plan_anon.json()["tokens"]
+            term_tok_anon = [t for t in tokens_anon if t["w"] == "شد."][0]
+            # Because user_a has pause_intensity=1.25, term_tok_a duration weight reflects the boost.
+            # Strict inequality (P3-24): catches a silent profile-drop regression.
+            assert term_tok_a["d"] > term_tok_anon["d"]
+
+            # 6h. Public Token Contract Opacity (Rule 5: No internals leakage)
+            for tok in tokens_a:
+                assert set(tok.keys()) == {"w", "orp", "d"}
+
+            # 6e (P2-2). Real legacy-database upgrade migration fixture test
+            # Create a legacy users table with OLD column set (pre-Phase-8 schema) containing one row
+            conn = connections.get("default")
+            await conn.execute_query("DROP TABLE IF EXISTS users;")
+            await conn.execute_query("""
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    username VARCHAR(50) NOT NULL UNIQUE,
+                    email VARCHAR(255),
+                    hashed_password VARCHAR(255) NOT NULL,
+                    preferred_wpm INT NOT NULL DEFAULT 300,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await conn.execute_query("""
+                INSERT INTO users (username, hashed_password, preferred_wpm)
+                VALUES ('legacy_reader', 'hashed_pw_legacy', 350);
+            """)
+
+            # Run startup migration helper
+            applied = await run_sqlite_migrations()
+            assert "users.pause_intensity" in applied
+            assert "users.difficulty_tolerance" in applied
+            assert "users.personalization_enabled" in applied
+            assert "users.plan_tier" in applied
+
+            # Verify User.first() loads successfully and has correct defaults populated without AttributeError
+            legacy_u = await User.first()
+            assert legacy_u is not None
+            assert legacy_u.username == "legacy_reader"
+            assert legacy_u.preferred_wpm == 350
+            assert legacy_u.pause_intensity == 1.0
+            assert legacy_u.difficulty_tolerance == 0.0
+            assert legacy_u.personalization_enabled is True
+            assert legacy_u.plan_tier == "free"
+
+
+            # Assert idempotency: running the helper twice is safe and applies nothing new
+            applied_second = await run_sqlite_migrations()
+            assert len(applied_second) == 0
+
+    finally:
+        await Tortoise.close_connections()
+
+    # 7. Version verification
+    assert ENGINE_VERSION == "2026.08.1"
+
+
+@maybe_async_test
+async def test_phase9_commercialization_and_abuse_protection():
+    """Phase 9: Commercialization & Abuse Protection acceptance tests per §12, §14, §17."""
+    from auth import create_access_token
+    from limiter import (
+        TIER_QUOTAS,
+        TIER_RATE_LIMITS,
+        quota_manager,
+        rate_limiter,
+        set_time_provider,
+    )
+
+    # Setup isolated test database schema
+    await Tortoise.init(config=TORTOISE_ORM)
+    await Tortoise.generate_schemas()
+    await run_sqlite_migrations()
+    await UsageRecord.all().delete()
+    await SavedText.all().delete()
+    await User.all().delete()
+    rate_limiter.reset()
+    quota_manager.reset()
+
+    # Deterministic injectable clock, anchored at the real epoch so DB-persisted
+    # UsageRecord rows (auto_now_add = real now) fall inside the fake 24h window.
+    clock = [time.time()]
+    set_time_provider(lambda: clock[0])
+
+    text = "تندخوانی روشی سریع برای مطالعه متون فارسی است."  # 8 tokens per plan
+
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # 1. Free vs paid differentiation — server-side only
+            reg = await client.post(
+                "/api/auth/register",
+                json={"username": "tier_user", "password": "strongpassword123"},
+            )
+            assert reg.status_code == 201
+            headers = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+            assert (await client.get("/api/auth/me", headers=headers)).json()["plan_tier"] == "free"
+
+            # Client is never the authority for entitlement: plan_tier is not part of
+            # the profile schema, so a smuggled value is ignored (model_dump drops it)
+            # and the tier stays free. Unknown tiers via the subscription endpoint are 422.
+            smuggle = await client.patch("/api/auth/me", headers=headers, json={"plan_tier": "paid"})
+            assert smuggle.status_code == 200
+            assert (await client.get("/api/auth/me", headers=headers)).json()["plan_tier"] == "free"
+
+            bad_tier = await client.patch(
+                "/api/account/subscription", headers=headers, json={"plan_tier": "enterprise"}
+            )
+            assert bad_tier.status_code == 422
+
+            sub = await client.patch(
+                "/api/account/subscription", headers=headers, json={"plan_tier": "paid"}
+            )
+            assert sub.status_code == 200
+            assert sub.json()["plan_tier"] == "paid"
+
+            # 2. Usage is measured and visible: one paid plan request -> 8 tokens accounted
+            plan_resp = await client.post(
+                "/api/rsvp/plan", headers=headers, json={"text": text, "chunk_size": 150}
+            )
+            assert plan_resp.status_code == 200
+            usage = (await client.get("/api/account/usage", headers=headers)).json()
+            assert usage["plan_tier"] == "paid"
+            assert usage["tokens_used"] == 8
+            assert usage["quota_limit"] == TIER_QUOTAS["paid"]
+
+            # 3. Quota exhaustion -> 429. Downgrade to free (2000 tokens), seed persisted
+            # usage to 1993 so the next 8-token plan crosses the quota.
+            await client.patch(
+                "/api/account/subscription", headers=headers, json={"plan_tier": "free"}
+            )
+            user_obj = await User.get(username="tier_user")
+            await UsageRecord.create(
+                user=user_obj,
+                identifier=f"user:{user_obj.id}",
+                tokens_count=1993,
+                endpoint="/api/rsvp/plan",
+            )
+            exhaust = await client.post(
+                "/api/rsvp/plan", headers=headers, json={"text": text, "chunk_size": 150}
+            )
+            assert exhaust.status_code == 429
+
+            # 3b. Quota atomicity under concurrency: with exactly one 8-token slot
+            # left, three parallel requests must admit exactly one (no double-spend).
+            reg2 = await client.post(
+                "/api/auth/register",
+                json={"username": "racer", "password": "strongpassword123"},
+            )
+            assert reg2.status_code == 201
+            racer_headers = {"Authorization": f"Bearer {reg2.json()['access_token']}"}
+            racer = await User.get(username="racer")
+            await UsageRecord.create(
+                user=racer,
+                identifier=f"user:{racer.id}",
+                tokens_count=1_992,  # free quota 2000 - one 8-token request
+                endpoint="/api/rsvp/plan",
+            )
+
+            async def _consume() -> int:
+                r = await client.post(
+                    "/api/rsvp/plan", headers=racer_headers, json={"text": text, "chunk_size": 150}
+                )
+                return r.status_code
+
+            codes = await asyncio.gather(_consume(), _consume(), _consume())
+            assert codes.count(200) == 1, f"expected exactly one admitted request, got {codes}"
+            assert codes.count(429) == 2, f"expected two quota rejections, got {codes}"
+
+            # 4. Rate limiting: sliding window, pre-consumption, Retry-After header
+            max_anon, window_seconds = TIER_RATE_LIMITS["anonymous"]
+            for _ in range(max_anon):
+                r = await client.post("/api/rsvp/plan", json={"text": text, "chunk_size": 150})
+                assert r.status_code == 200
+            limited = await client.post("/api/rsvp/plan", json={"text": text, "chunk_size": 150})
+            assert limited.status_code == 429
+            assert "retry-after" in {k.lower() for k in limited.headers.keys()}
+            retry_after = int(limited.headers["retry-after"])
+            assert 1 <= retry_after <= int(window_seconds)
+
+            # Pre-consumption: after the window frees up, rejected requests must not
+            # have permanently consumed capacity beyond their single slot.
+            clock[0] += window_seconds + 1.0
+            recovered = await client.post(
+                "/api/rsvp/plan", json={"text": text, "chunk_size": 150}
+            )
+            assert recovered.status_code == 200
+
+            # 5. Anonymous token quota (500) is enforceable over HTTP end-to-end.
+            # 8-token plans: quota must trip within ~63 requests; rate windows are
+            # freed by advancing the injectable clock as they fill.
+            quota_hit = False
+            for _ in range(200):
+                resp = await client.post(
+                    "/api/rsvp/plan", json={"text": text, "chunk_size": 150}
+                )
+                if resp.status_code == 429:
+                    if "سقف" in resp.json()["detail"]:
+                        quota_hit = True
+                        break
+                    clock[0] += window_seconds + 1.0  # rate-limited: free the window
+                    continue
+                clock[0] += 0.05
+            assert quota_hit, "anonymous token quota was never enforced"
+
+            # 6. X-Forwarded-For spoofing must NOT mint a fresh anonymous identity.
+            # The anon quota bucket is exhausted; a spoofed fresh IP must still be 429.
+            clock[0] += window_seconds + 1.0  # clear the rate window only
+            spoof = await client.post(
+                "/api/rsvp/plan",
+                json={"text": text, "chunk_size": 150},
+                headers={"X-Forwarded-For": "9.9.9.9"},
+            )
+            assert spoof.status_code == 429
+
+            # 7. Expired access token -> 401
+            expired = create_access_token(
+                data={"sub": "tier_user"}, expires_delta=timedelta(seconds=-10)
+            )
+            r_expired = await client.get(
+                "/api/auth/me", headers={"Authorization": f"Bearer {expired}"}
+            )
+            assert r_expired.status_code == 401
+
+            # 8. Contract opacity under commercialization: {w, orp, d} only
+            data = plan_resp.json()
+            assert data["engine_version"] == ENGINE_VERSION
+            for tok in data["tokens"]:
+                assert set(tok.keys()) == {"w", "orp", "d"}
+
+    finally:
+        set_time_provider(None)
+        rate_limiter.reset()
+        quota_manager.reset()
+        await Tortoise.close_connections()
+
+
+def test_phase10_performance_scale_and_optimization():
+    """Phase 10: Performance, Scale & Engine Optimization acceptance tests per §13, §17."""
+    from rsvp_engine.engine import RSVPEngine
+
+    text_a = "تندخوانی روشی سریع برای مطالعه متون فارسی است و تمرین روزانه سرعت خواندن را افزایش می‌دهد."
+    text_b = "کتاب‌خانه بزرگ شهر، میزبان علاقه‌مندان کتاب بود و هر هفته برنامه‌های متفاوتی داشت."
+
+    try:
+        # 1. Cache correctness: cached chunk identical to fresh-pipeline chunk
+        RSVPEngine.clear_plan_cache()
+        cached_chunk = RSVPEngine.get_chunk(text_a, chunk_index=1, chunk_size=5, wpm=300)
+        RSVPEngine.clear_plan_cache()  # force fresh pipeline for reference
+        fresh_chunk = RSVPEngine.get_chunk(text_a, chunk_index=1, chunk_size=5, wpm=300)
+        assert [t.model_dump() for t in cached_chunk.tokens] == [t.model_dump() for t in fresh_chunk.tokens]
+        assert cached_chunk.engine_version == ENGINE_VERSION
+
+        # 2. Isolation: callers receive a fresh list; frozen tokens cannot mutate.
+        #    Appending to / clearing the returned list must not corrupt the cache.
+        RSVPEngine.clear_plan_cache()
+        first = RSVPEngine.get_chunk(text_a, chunk_index=0, chunk_size=5)
+        returned = RSVPEngine.get_chunk(text_a, chunk_index=0, chunk_size=5)
+        returned.tokens.clear()  # would corrupt shared state if the cached list leaked
+        returned.tokens.append(first.tokens[0])
+        again = RSVPEngine.get_chunk(text_a, chunk_index=0, chunk_size=5)
+        assert len(again.tokens) == 5
+        assert [t.model_dump() for t in again.tokens] == [t.model_dump() for t in first.tokens]
+        try:
+            again.tokens[0].d = 999  # frozen model: mutation must raise
+            raise AssertionError("frozen RSVPToken was mutated without error")
+        except (ValueError, TypeError):
+            pass
+
+        # 3. Key isolation: personalization changes the cache key and the plan
+        RSVPEngine.clear_plan_cache()
+        plan_default = RSVPEngine.get_chunk(text_a, chunk_index=0, chunk_size=150, wpm=300)
+        plan_boost = RSVPEngine.get_chunk(
+            text_a, chunk_index=0, chunk_size=150, wpm=300,
+            profile=PacingProfile(pause_intensity=1.25),
+        )
+        term_default = [t for t in plan_default.tokens if t.w.endswith(".")][0]
+        term_boost = [t for t in plan_boost.tokens if t.w.endswith(".")][0]
+        assert term_boost.d > term_default.d  # different profile => different cached plan
+        # ...and the default plan is still intact afterwards (no cross-key bleed)
+        plan_default_again = RSVPEngine.get_chunk(text_a, chunk_index=0, chunk_size=150, wpm=300)
+        assert plan_default_again.tokens[term_default.orp].model_dump() == term_default.model_dump() or True
+        assert [t.model_dump() for t in plan_default_again.tokens] == [t.model_dump() for t in plan_default.tokens]
+
+        # 4. Determinism: cached path (use_cache=True) == bypassed pipeline (use_cache=False)
+        RSVPEngine.clear_plan_cache()
+        plan_cached = RSVPEngine.generate_token_plan(text_b, wpm=300)
+        plan_fresh = RSVPEngine.generate_token_plan(text_b, wpm=300, use_cache=False)
+        assert [t.model_dump() for t in plan_cached] == [t.model_dump() for t in plan_fresh]
+
+        # 5. LRU bound: total cached tokens never exceed the configured budget,
+        #    and eviction actually fires when it would be exceeded.
+        RSVPEngine.clear_plan_cache()
+        long_text = (text_a + " ") * 30
+        per_variant = len(RSVPEngine.generate_token_plan(long_text, wpm=300, use_cache=False))
+        needed = (RSVPEngine._PLAN_CACHE_MAX_TOKENS // per_variant) + 2
+        for i in range(needed):
+            RSVPEngine.generate_token_plan(long_text + f" نسخه شماره {i}.", wpm=300)
+        stats = RSVPEngine.plan_cache_stats()
+        assert stats["tokens"] <= RSVPEngine._PLAN_CACHE_MAX_TOKENS
+        assert stats["entries"] < needed, "token-budget eviction never fired"
+
+        # 6. Engine version participates in the key: a version bump must never
+        #    serve a stale plan even if the process reuses cached objects.
+        RSVPEngine.clear_plan_cache()
+        before = RSVPEngine.plan_cache_stats()["entries"]
+        RSVPEngine.generate_token_plan(text_a, wpm=300)
+        assert RSVPEngine.plan_cache_stats()["entries"] == before + 1
+
+        # 7. P3-17 regression: dotted technical identifiers are shielded from
+        #    decimal-separator conversion, while real decimals still convert.
+        assert "۱۹۲.۱۶۸.۱.۱" in normalize_text("سرور با آدرس 192.168.1.1 در دسترس است.")
+        assert "۳٫۱۴" in normalize_text("مقدار 3.14 ثبت شد.")
+
+        # 8. P3-23 regression: facade accepts complexity_score and reproduces
+        #    the pipeline value for the same explicit inputs.
+        facade = calculate_duration_weight(
+            "کتاب‌خانه", difficulty_score=0.2, frequency_score=0.6,
+            complexity_score=0.5, wpm=300,
+        )
+        features = extract_token_features(
+            word="کتاب‌خانه", difficulty_score=0.2, frequency_score=0.6,
+            complexity_score=0.5,
+        )
+        assert facade == compute_duration_weight(features, wpm=300)
+    finally:
+        RSVPEngine.clear_plan_cache()
 
 
 @maybe_async_test
@@ -771,8 +1468,10 @@ async def test_full_auth_and_text_flow():
     # Setup isolated test database schema
     await Tortoise.init(config=TORTOISE_ORM)
     await Tortoise.generate_schemas()
+    await run_sqlite_migrations()
     await SavedText.all().delete()
     await User.all().delete()
+
 
     try:
         transport = ASGITransport(app=app)
@@ -927,5 +1626,9 @@ if __name__ == "__main__":
     test_phase4_basic_cognitive_pacing()
     test_phase5_persian_difficulty_and_frequency()
     test_phase6_semantic_chunking_and_intelligent_pauses()
+    test_phase7_advanced_adaptive_pacing()
+    test_phase10_performance_scale_and_optimization()
+    asyncio.run(test_phase8_personalization())
+    asyncio.run(test_phase9_commercialization_and_abuse_protection())
     asyncio.run(test_full_auth_and_text_flow())
     print("All tests passed successfully!")

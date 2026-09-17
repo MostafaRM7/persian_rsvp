@@ -238,6 +238,45 @@ async function runTests() {
     assert.equal(player.renderer.wordEl.textContent, 'پایان');
   }
 
+  // 7. P3-15: restart after done reloads a fresh plan (not a stale last-chunk replay)
+  {
+    let lastProgress = null;
+    const player = createTestPlayer({ onProgress: (p) => { lastProgress = p; } });
+    await player.loadPlan('متن آزمایشی');
+    player.setState('running');
+    player.index = 50;
+    await player.fetchNextChunk(); // buffer now holds chunks 0+1
+    player.finish();
+    assert.equal(player.state, 'done');
+
+    fetchCalls = [];
+    await player.start();
+    assert.equal(fetchCalls.length, 1, 'done-state start must reload the plan from the server');
+    assert.equal(fetchCalls[0].payload.chunk_index, 0, 'restart must fetch chunk 0');
+    assert.equal(lastProgress.index, 0, 'restart must render the first token of a fresh plan');
+    assert.equal(player.buffer.length(), 100, 'buffer must hold exactly the fresh first chunk');
+    assert.equal(player.state, 'running');
+    player.pause(); // stop the live timer chain so the test process can exit
+  }
+
+  // 8. P3-16: setWpm during loading discards the stale-wpm initial fetch
+  {
+    fetchCalls = [];
+    const player = createTestPlayer();
+    fetchDelayMs = 50;
+    const loadPromise = player.loadPlan('متن آزمایشی');
+    await new Promise((res) => setTimeout(res, 10)); // let the load dispatch
+    assert.equal(player.state, 'loading');
+
+    await player.setWpm(900);
+    assert.equal(player.wpm, 900);
+    await loadPromise;
+    fetchDelayMs = 0;
+
+    assert.equal(player.buffer.length(), 0, 'stale-wpm initial fetch must be discarded, not installed');
+    assert.equal(player.state, 'idle', 'superseded load must restore idle, not stay loading');
+  }
+
   console.log('All RSVPPlayer WPM refetch unit tests passed successfully!');
 }
 

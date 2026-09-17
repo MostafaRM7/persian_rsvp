@@ -20,7 +20,11 @@ class MockElement {
 globalThis.window = {
   innerWidth: 1024,
   devicePixelRatio: 2,
-  addEventListener: () => {},
+  _windowListeners: [],
+  addEventListener(type, handler) { this._windowListeners.push([type, handler]); },
+  removeEventListener(type, handler) {
+    this._windowListeners = this._windowListeners.filter(([t, h]) => !(t === type && h === handler));
+  },
   getComputedStyle: (el) => ({
     fontFamily: el.style.fontFamily || 'Vazirmatn',
     fontSize: el.style.fontSize || '48px',
@@ -30,13 +34,19 @@ globalThis.window = {
     matches: true,
     addEventListener: () => {},
     addListener: () => {},
+    removeEventListener: () => {},
+    removeListener: () => {},
   }),
 };
 
 globalThis.document = {
   fonts: {
     ready: Promise.resolve(),
-    addEventListener: () => {},
+    _fontListeners: [],
+    addEventListener(type, handler) { this._fontListeners.push([type, handler]); },
+    removeEventListener(type, handler) {
+      this._fontListeners = this._fontListeners.filter(([t, h]) => !(t === type && h === handler));
+    },
   },
   createRange: () => ({
     setStart: () => {},
@@ -50,6 +60,12 @@ globalThis.document = {
       height: 40,
     }),
   }),
+};
+
+globalThis.ResizeObserver = class {
+  constructor(cb) { this.cb = cb; this.observed = []; this.disconnected = false; }
+  observe(el) { this.observed.push(el); }
+  disconnect() { this.disconnected = true; this.observed = []; }
 };
 
 const wordEl = new MockElement();
@@ -129,5 +145,65 @@ assert.equal(wordEl.textContent, 'پایان');
 assert.equal(wordEl.style.transform, 'none');
 renderer.clear();
 assert.equal(wordEl.textContent, '');
+
+// 10. P3-11: dispose() removes every global listener/observer (idempotent)
+{
+  const r = new WordRenderer(new MockElement(), new MockElement());
+  const winCount = globalThis.window._windowListeners.length;
+  const fontCount = globalThis.document.fonts._fontListeners.length;
+  assert.ok(winCount >= 1, 'resize listener registered');
+  assert.ok(fontCount >= 1, 'fonts loadingdone listener registered');
+  assert.ok(r.resizeObserver && r.resizeObserver.observed.length === 1, 'ResizeObserver observing focusEl');
+
+  r.dispose();
+  assert.equal(globalThis.window._windowListeners.length, winCount - 1, 'window listener removed on dispose');
+  assert.equal(globalThis.document.fonts._fontListeners.length, fontCount - 1, 'fonts listener removed on dispose');
+  assert.ok(r.resizeObserver === null || r.resizeObserver.disconnected, 'ResizeObserver disconnected on dispose');
+  assert.equal(r.metricsCache.size, 0, 'cache cleared on dispose');
+  r.dispose(); // idempotent: second call must not throw
+}
+
+// 11. P3-11: legacy addListener path self-removes (no handler accumulation)
+{
+  const removed = [];
+  const added = [];
+  const fakeMq = {
+    matches: true,
+    addListener: (h) => added.push(h),
+    removeListener: (h) => removed.push(h),
+  };
+  const origMatchMedia = globalThis.window.matchMedia;
+  globalThis.window.matchMedia = () => fakeMq;
+
+  const r = new WordRenderer(new MockElement(), new MockElement());
+  assert.equal(added.length, 1, 'legacy addListener used when addEventListener missing');
+  added[0](); // fire the DPR change handler
+  assert.ok(removed.includes(added[0]), 'legacy handler self-removes before re-arm (leak fixed)');
+
+  r.dispose();
+  assert.ok(removed.includes(added[0]), 'dispose also removes legacy handler');
+  globalThis.window.matchMedia = origMatchMedia;
+}
+
+// 12. P3-11: dispose tears down the DPR media-query listener registered via addEventListener
+{
+  const mqListeners = [];
+  const fakeMq = {
+    matches: true,
+    addEventListener: (type, h) => mqListeners.push([type, h]),
+    removeEventListener: (type, h) => {
+      const i = mqListeners.findIndex(([t, hh]) => t === type && h === hh);
+      if (i >= 0) mqListeners.splice(i, 1);
+    },
+  };
+  const origMatchMedia = globalThis.window.matchMedia;
+  globalThis.window.matchMedia = () => fakeMq;
+
+  const r = new WordRenderer(new MockElement(), new MockElement());
+  assert.equal(mqListeners.length, 1);
+  r.dispose();
+  assert.equal(mqListeners.length, 0, 'mq change listener removed on dispose');
+  globalThis.window.matchMedia = origMatchMedia;
+}
 
 console.log('All client WordRenderer unit tests passed successfully!');

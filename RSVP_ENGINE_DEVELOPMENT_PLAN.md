@@ -926,10 +926,10 @@ Use this section as the execution state.
 | 4 | Basic Cognitive Pacing | DONE |
 | 5 | Persian Difficulty & Frequency Intelligence | DONE |
 | 6 | Semantic Chunking & Intelligent Pauses | DONE |
-| 7 | Advanced Adaptive Pacing | TODO |
-| 8 | Personalization | TODO |
-| 9 | Commercialization & Abuse Protection | TODO |
-| 10 | Performance, Scale & Engine Optimization | TODO |
+| 7 | Advanced Adaptive Pacing | DONE |
+| 8 | Personalization | DONE |
+| 9 | Commercialization & Abuse Protection | DONE |
+| 10 | Performance, Scale & Engine Optimization | DONE |
 
 ### Open P3 ledger (deferred findings — must not be silently dropped)
 
@@ -939,19 +939,25 @@ Use this section as the execution state.
 | P3-6 | Persian decimal separator `٫` / decimal-comma unhandled | **Phase 5 (before difficulty features)** | **Resolved in Phase 5** (canonical `٫` and thousands comma, verified with regression tests) |
 | P3-8 | `ها` plural suffix join is open-class | **Phase 5** | **Resolved in Phase 5** (converted to curated noun whitelist with negative regression tests) |
 | P3-9 | Cosmetic intermediate space in normalized string | Ride-along: next changeset touching `normalization.py`/`tokenizer.py` | **Resolved in Phase 6** (horizontal whitespace regex in normalization eliminates cosmetic spaces, verified with regression tests) |
-| P3-10 | `test_renderer.mjs` not wired into any automated test workflow (manual `node` only) | Ride-along: next changeset touching tests/README | Client regressions could pass pytest silently |
-| P3-11 | Renderer global listeners (resize/fonts/DPR/ResizeObserver) lack `dispose()`; legacy `mq.addListener` leaks per DPR change | Phase 10 (client memory/perf) | Harmless for current single-page lifetime |
-| P3-12 | `getComputedStyle` per `render()` call (~17/s at 1000 WPM) | Phase 10 (profiling-gated) | Negligible; measure before optimizing |
-| P3-13 | `engine.py` duplicates pacing punctuation detection via string literal (drift risk vs `pacing.CLOSING_BRACKETS_QUOTES`) | Ride-along: next `engine.py` changeset | Refactor to shared constant |
-| P3-14 | Documented Class 2/3 tier ranges overlap at 145 (actual outputs disjoint) | Ride-along: next `pacing.py` changeset | Doc/clamp nit only |
-| P3-15 | Restart-after-done replays only the last chunk (`start()` sets `index=0` without clearing/reloading buffer), stale `d` if WPM changed post-finish | Ride-along: next `player.js` changeset | Fix: `loadPlan` on restart, not bare index reset |
-| P3-16 | `setWpm` during `loading` skips generation bump; initial fetch installs stale-wpm buffer | Ride-along: same changeset as P3-15 | Sub-second window, self-heals on next chunk |
-| P3-17 | Dotted technical identifiers (IP addresses like `192.168.1.1`) get decimal-separator conversion | Ride-along: next `normalization.py` changeset | Shield dotted-quads from decimal rule |
+| P3-10 | `test_renderer.mjs` not wired into any automated test workflow (manual `node` only) | ~~Ride-along~~ **Resolved in Phase 10** (`test_client_js.py` runs both client suites inside `pytest` with skip-if-no-Node; `npm test`/`npm run syntax` scripts added) | Client regressions could pass pytest silently |
+| P3-11 | Renderer global listeners (resize/fonts/DPR/ResizeObserver) lack `dispose()`; legacy `mq.addListener` leaks per DPR change | ~~Phase 10~~ **Resolved in Phase 10** (`dispose()` teardown for all listeners + observer; legacy `addListener` handlers now self-remove before re-arm; verified by dispose/leak tests in `test_renderer.mjs`) | Harmless for current single-page lifetime |
+| P3-12 | `getComputedStyle` per `render()` call (~17/s at 1000 WPM) | ~~Phase 10~~ **Resolved in Phase 10 as measured-and-wontfix** (browser microbenchmark: ~0.24 µs/call warm, ~3 µs cold invalidation — ~5 µs/sec at 1200 WPM; §13 forbids complexity without measured need) | Negligible; measure before optimizing |
+| P3-13 | `engine.py` duplicates pacing punctuation detection via string literal (drift risk vs `pacing.CLOSING_BRACKETS_QUOTES`) | Ride-along: next `engine.py` changeset | **Resolved in Phase 7** (consolidated with P3-20 into `constants.ALL_PUNCTUATION_CHARS`) |
+| P3-14 | Documented Class 2/3 tier ranges overlap at 145 (actual outputs disjoint) | Ride-along: next `pacing.py` changeset | **Resolved in Phase 7** (Class 2 clamped to 115–144, Class 3 starting at 145; strictly disjoint) |
+| P3-15 | Restart-after-done replays only the last chunk (`start()` sets `index=0` without clearing/reloading buffer), stale `d` if WPM changed post-finish | ~~Ride-along~~ **Resolved in Phase 10** (`start()` in done-state reloads a fresh plan via `loadPlan`; regression test in `test_player_wpm.mjs` scenario 7) | Fix: `loadPlan` on restart, not bare index reset |
+| P3-16 | `setWpm` during `loading` skips generation bump; initial fetch installs stale-wpm buffer | ~~Ride-along~~ **Resolved in Phase 10** (`setWpm` bumps the generation while `loading`, before the empty-buffer guard; superseded load restores `idle`; regression test in `test_player_wpm.mjs` scenario 8) | Sub-second window, self-heals on next chunk |
+| P3-17 | Dotted technical identifiers (IP addresses like `192.168.1.1`) get decimal-separator conversion | ~~Ride-along~~ **Resolved in Phase 10** (dotted-quad shield in `normalization.py` decimal rule; regression tests in the Phase 10 suite — IPs keep dots in both ASCII and Persian digits, real decimals still convert) | Shield dotted-quads from decimal rule |
 | P3-18 | `AFFIX_STRIP_REGEX` allows over-aggressive 1-letter suffix stripping (`م`/`ی`); needs minimum-stem guard | ~~Ride-along~~ **Closed in Phase 5 fix cycle** (min-stem guard ≥3 implemented in `frequency.py`; verified by reviewer probes: شام/غم/زمین/بهاریم stay rare) | |
-| P3-19 | Frequency lexicon coverage small (~300 entries); everyday words (`گوش`, `سینما`, `خانواده`, `شنبه`, …) unlisted → rare-dwell | Phase 7 (pacing rework) | Partial patch landed with Phase 5 fix (495 entries) |
-| P3-20 | Punctuation sets now duplicated in 3 modules (`pacing.py`, `semantics.py`, `engine.py` literal — P3-13 pattern spreading) | Ride-along: next `engine.py`/`semantics.py` changeset | Consolidate into one shared constants module; fold in P3-13 |
-| P3-21 | `FINITE_PREDICATE_VERBS` in `semantics.py` defined but never referenced (dead code) | Ride-along: same changeset as P3-20 | |
-| P3-22 | Phase 4 dialogue test widened to `in (165, 170)` without pinning the cause — the 170 path is semantic bonus (15) stacking on the quote-introducer bonus (+5); behavior is correct but the assertion no longer documents which value occurs when | Ride-along: next pacing-test changeset | Pin exact values or document bonus stacking in a comment |
+| P3-19 | Frequency lexicon coverage small (~300 entries); everyday words (`گوش`, `سینما`, `خانواده`, `شنبه`, …) unlisted → rare-dwell | Phase 7 (pacing rework) | **Resolved in Phase 7** (expanded to 1,141 entries covering common Persian prose, verified with coverage tests) |
+| P3-20 | Punctuation sets now duplicated in 3 modules (`pacing.py`, `semantics.py`, `engine.py` literal — P3-13 pattern spreading) | Ride-along: next `engine.py`/`semantics.py` changeset | **Resolved in Phase 7** (consolidated in `rsvp_engine/constants.py`) |
+| P3-21 | `FINITE_PREDICATE_VERBS` in `semantics.py` defined but never referenced (dead code) | Ride-along: same changeset as P3-20 | **Resolved in Phase 7** (removed dead code from `semantics.py`) |
+| P3-22 | Phase 4 dialogue test widened to `in (165, 170)` without pinning the cause — the 170 path is semantic bonus (15) stacking on the quote-introducer bonus (+5); behavior is correct but the assertion no longer documents which value occurs when | Ride-along: next pacing-test changeset | **Resolved in Phase 7** (exact values pinned and bonus stacking documented in `test_api.py`) |
+| P3-23 | Facade `calculate_duration_weight` signature drift: does not accept/pass `complexity_score`, so direct-facade callers get different difficulty inputs than the engine pipeline path; pipeline callers unaffected | ~~Ride-along~~ **Resolved in Phase 10** (optional `complexity_score` param added to the facade; regression test asserts facade == pipeline for identical inputs) | |
+| P3-24 | Phase 8 test 6g asserts `term_tok_a.d >= term_tok_anon.d` (weak): with intensity 1.25 the boost is always strict, so the assertion could be `>` and would then catch a silent profile-drop regression | ~~Ride-along~~ **Resolved in Phase 10** (assertion strengthened to strict `>`) | |
+| P3-25 | Dual migration tracks: aerich is installed (`requirements.txt`, `TORTOISE_ORM`, init migration `0_20260906215740_init.py`) but unused — its migration is stale (lacks personalization columns) while the real path is `run_sqlite_migrations()` additive helper. Two schema sources can drift; a DB created from aerich metadata relies on startup helper healing | ~~Phase 10~~ **Resolved in Phase 10** (aerich removed entirely: `requirements.txt`, `TORTOISE_ORM` app list, `migrations/`, stale pyproject `[tool.tortoise]` block; the idempotent startup helper is the single schema strategy, justified for the SQLite-only deployment) | |
+| P3-26 | `@app.on_event("startup")` in `app.py` emits a FastAPI DeprecationWarning (pytest now reports 2 warnings vs. the project's zero-warnings bar) | ~~Ride-along~~ **Resolved in Phase 8 fix-verification cycle** (`app.py` converted to `lifespan` context manager; suite back to zero warnings — confirmed through Phase 9 runs) | |
+| P3-27 | Rate limiting state (both `RateLimiter._history` and `QuotaManager._anon_usage`) is in-memory only: a process restart grants every anonymous IP a fresh rate window and quota allowance; multi-worker deployments get per-worker windows | ~~Phase 10~~ **Resolved in Phase 10 as documented constraint** (§13: "only introduce infrastructure when measurements justify it" — single-process Uvicorn is the deployment; README documents the multi-worker/Redis caveat. Re-open only if horizontal scaling is actually adopted) | |
+| P3-28 | `PATCH /api/account/subscription` has no payment integration — tier changes are authenticated-user-authoritative within the fixed `{free, paid}` catalog (MVP). Real entitlement requires payment webhook wiring | Phase 10+ (product decision) | Server still never trusts the *request body* for quota state: tier lives in the DB column and all enforcement reads it |
 
 Rule: a deferred finding is only closed by a code change plus regression test, or by explicit removal from this ledger with a one-line justification.
 
