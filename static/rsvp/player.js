@@ -24,6 +24,7 @@ export class RSVPPlayer {
     prefetchThreshold = 45,
     getAuthToken = () => null,
     onProgress = () => {},
+    onError = () => {},
     onStateChange = () => {},
     onFinish = () => {},
   }) {
@@ -38,6 +39,10 @@ export class RSVPPlayer {
     this.onProgress = onProgress;
     this.onStateChange = onStateChange;
     this.onFinish = onFinish;
+    // Commercialization surface (§12): fetch failures (429 quota/rate-limit,
+    // network errors, auth expiry) are forwarded with status/detail/retryAfter
+    // so the host UI can explain limits instead of failing silently.
+    this.onError = onError;
 
     this.state = 'idle'; // idle | loading | running | paused | buffering | done
     this.index = 0;
@@ -95,7 +100,12 @@ export class RSVPPlayer {
       return true;
     } catch (err) {
       console.error('Failed to load initial RSVP plan:', err);
-      this.renderer.setMessage('خطا در دریافت متن');
+      this.onError(err);
+      this.renderer.setMessage(
+        err && err.status === 429
+          ? 'سقف مصرف به پایان رسیده است'
+          : 'خطا در دریافت متن'
+      );
       this.setState('idle');
       return false;
     }
@@ -135,6 +145,11 @@ export class RSVPPlayer {
           chunkSize: this.chunkSize,
           authToken: this.getAuthToken(),
           wpm: this.wpm,
+        }).catch((err) => {
+          // Background prefetch errors surface to the UI but don't crash playback;
+          // the underrun path handles retries separately.
+          this.onError(err);
+          throw err;
         });
         if (fetchGen === this.fetchGeneration && nextChunk && nextChunk.tokens && nextChunk.tokens.length > 0) {
           this.buffer.appendChunk(nextChunk);

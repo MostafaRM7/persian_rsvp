@@ -102,6 +102,82 @@ body {
 .btn-danger {
   color: var(--danger);
 }
+
+/* ---------- Commercialization: usage badge, upgrade, quota banner ---------- */
+.usage-badge {
+  font-size: 0.8rem;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.65rem;
+  border-radius: 9999px;
+  white-space: nowrap;
+}
+
+.usage-badge.warn {
+  color: var(--orp);
+  border-color: var(--orp);
+}
+
+.usage-badge.exhausted {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.btn-upgrade {
+  color: var(--orp);
+  border-color: var(--orp);
+}
+
+.btn-upgrade:hover {
+  background: var(--orp);
+  color: var(--bg);
+}
+
+.quota-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin: 0.25rem auto 0;
+  width: min(92vw, 900px);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: rgba(248, 81, 73, 0.12);
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+}
+
+.btn-banner-upgrade {
+  background: var(--orp);
+  color: var(--bg);
+  border: none;
+  border-radius: 6px;
+  padding: 0.3rem 0.8rem;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-banner-upgrade:hover {
+  filter: brightness(1.1);
+}
+
+.btn-banner-close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 0.2rem;
+}
+
+.btn-banner-close:hover {
+  color: var(--text);
+}
 .btn-danger:hover {
   border-color: var(--danger);
   color: #fff;

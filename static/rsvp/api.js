@@ -42,7 +42,20 @@ export async function fetchPlanChunk({
   });
 
   if (!response.ok) {
-    throw new Error(`Plan request failed with status ${response.status}`);
+    // Surface server-provided Persian detail (e.g. quota/rate-limit messages)
+    // and standard headers to callers for UI handling.
+    let detail = null;
+    try {
+      const data = await response.json();
+      detail = (data && data.detail) || null;
+    } catch (e) {
+      /* non-JSON body: keep null detail */
+    }
+    const err = new Error(`Plan request failed with status ${response.status}`);
+    err.status = response.status;
+    err.detail = detail;
+    err.retryAfter = response.headers.get('retry-after');
+    throw err;
   }
 
   return await response.json();

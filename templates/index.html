@@ -23,6 +23,8 @@
         <button id="btn-library-open" class="btn-nav" title="متن‌های ذخیره‌شده">📚 کتابخانه من</button>
         <button id="btn-save-text" class="btn-nav" title="ذخیره متن فعلی">💾 ذخیره متن</button>
         <span id="user-display" class="user-badge"></span>
+        <span id="usage-badge" class="usage-badge hidden" title="مصرف توکن در ۲۴ ساعت گذشته"></span>
+        <button id="btn-upgrade" class="btn-nav btn-upgrade hidden" title="ارتقای اشتراک">⭐ ارتقا</button>
         <button id="btn-logout" class="btn-nav btn-danger" title="خروج از حساب">خروج</button>
       </div>
     </div>
@@ -40,6 +42,13 @@
   <div id="status" dir="ltr">
     <span id="progress-text">0 / 0</span>
     <span id="wpm-display">300 WPM</span>
+  </div>
+
+  <!-- Commercialization banner (§12): quota exhausted / rate limited -->
+  <div id="quota-banner" class="quota-banner hidden" role="alert">
+    <span id="quota-banner-text"></span>
+    <button id="btn-banner-upgrade" class="btn-banner-upgrade hidden">⭐ ارتقای اشتراک</button>
+    <button id="btn-banner-close" class="btn-banner-close" aria-label="بستن">&times;</button>
   </div>
   <div id="progress-bar"><div id="progress-fill"></div></div>
 

@@ -37,6 +37,14 @@ const pauseBtn       = $('btn-pause');
 const resetBtn       = $('btn-reset');
 const fontSelectEl   = $('font-select');
 
+// Commercialization (§12): server-authoritative quota surface
+const usageBadgeEl      = $('usage-badge');
+const btnUpgradeEl      = $('btn-upgrade');
+const quotaBannerEl     = $('quota-banner');
+const quotaBannerTextEl = $('quota-banner-text');
+const btnBannerUpgrade  = $('btn-banner-upgrade');
+const btnBannerClose    = $('btn-banner-close');
+
 // Auth & Nav
 const authGuestEl    = $('auth-guest');
 const authMemberEl   = $('auth-member');
@@ -96,6 +104,24 @@ const player = new RSVPPlayer({
   onProgress: ({ index, total, pct }) => {
     progressTextEl.textContent = `${total > 0 ? index + 1 : 0} / ${total}`;
     progressFillEl.style.width = `${pct}%`;
+  },
+  onError: (err) => {
+    // 429: quota exhausted (persistent banner + upgrade path) or rate limited
+    // (transient notice). 401: expired session — clear it and prompt re-login.
+    if (err && err.status === 429) {
+      const detail = err.detail || 'محدودیت مصرف اعمال شده است.';
+      const isQuota = typeof detail === 'string' && detail.includes('سقف');
+      showQuotaBanner(detail, { canUpgrade: !!currentUser });
+      if (!isQuota) {
+        setTimeout(hideQuotaBanner, 8000); // rate-limit notice is transient
+      }
+    } else if (err && err.status === 401) {
+      setToken(null);
+      currentUser = null;
+      updateAuthUI();
+      showQuotaBanner('نشست شما منقضی شده است؛ لطفاً دوباره وارد شوید.', { canUpgrade: false });
+      setTimeout(hideQuotaBanner, 6000);
+    }
   },
   onStateChange: (state) => {
     if (state === 'running') {
@@ -158,12 +184,95 @@ function updateAuthUI() {
     authGuestEl.classList.add('hidden');
     authMemberEl.classList.remove('hidden');
     userDisplayEl.innerHTML = `<span>👤</span> <strong>${escapeHtml(currentUser.username)}</strong>`;
+    usageBadgeEl.classList.remove('hidden');
+    btnUpgradeEl.classList.toggle('hidden', currentUser.plan_tier !== 'free');
+    refreshUsage();
   } else {
     authGuestEl.classList.remove('hidden');
     authMemberEl.classList.add('hidden');
     userDisplayEl.textContent = '';
+    usageBadgeEl.classList.add('hidden');
+    btnUpgradeEl.classList.add('hidden');
   }
 }
+
+/* ---------------- Quota & Usage surface (§12) ---------------- */
+let lastUsage = null;           // last server-known usage snapshot
+let usageFetchInFlight = false; // coalesce parallel callers
+let usageFetchAt = 0;           // last completed fetch timestamp
+const USAGE_FETCH_MIN_INTERVAL_MS = 30000; // throttles badge refresh
+
+function formatUsageBadge(usage) {
+  const pct = usage.quota_limit > 0 ? usage.tokens_used / usage.quota_limit : 0;
+  const formatted = `${usage.tokens_used.toLocaleString('fa-IR')} / ${usage.quota_limit.toLocaleString('fa-IR')}`;
+  usageBadgeEl.textContent = `⚡ ${formatted} توکن`;
+  usageBadgeEl.classList.toggle('warn', pct >= 0.75 && pct < 1);
+  usageBadgeEl.classList.toggle('exhausted', pct >= 1);
+}
+
+async function refreshUsage(force = false) {
+  if (!currentUser) return;
+  if (usageFetchInFlight) return;
+  if (!force && Date.now() - usageFetchAt < USAGE_FETCH_MIN_INTERVAL_MS) return;
+
+  usageFetchInFlight = true;
+  try {
+    const res = await apiFetch('/api/account/usage');
+    if (res.ok) {
+      lastUsage = await res.json();
+      usageFetchAt = Date.now();
+      formatUsageBadge(lastUsage);
+    } else if (res.status === 401) {
+      setToken(null);
+      currentUser = null;
+      updateAuthUI();
+    }
+  } catch (err) {
+    console.error('Failed to fetch usage:', err);
+  } finally {
+    usageFetchInFlight = false;
+  }
+}
+
+function showQuotaBanner(message, { canUpgrade = false } = {}) {
+  quotaBannerTextEl.textContent = message;
+  btnBannerUpgrade.classList.toggle('hidden', !canUpgrade);
+  quotaBannerEl.classList.remove('hidden');
+}
+
+function hideQuotaBanner() {
+  quotaBannerEl.classList.add('hidden');
+}
+
+async function upgradeSubscription() {
+  if (!currentUser) return;
+  btnUpgradeEl.disabled = true;
+  if (btnBannerUpgrade) btnBannerUpgrade.disabled = true;
+  try {
+    const res = await apiFetch('/api/account/subscription', {
+      method: 'PATCH',
+      body: JSON.stringify({ plan_tier: 'paid' }),
+    });
+    if (res.ok) {
+      currentUser = await res.json();
+      updateAuthUI();
+      hideQuotaBanner();
+      await refreshUsage(true);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showQuotaBanner(data.detail || 'ارتقای اشتراک ناموفق بود.', { canUpgrade: false });
+    }
+  } catch (err) {
+    showQuotaBanner('برقراری ارتباط با سرور ممکن نشد.', { canUpgrade: false });
+  } finally {
+    btnUpgradeEl.disabled = false;
+    if (btnBannerUpgrade) btnBannerUpgrade.disabled = false;
+  }
+}
+
+btnUpgradeEl.addEventListener('click', upgradeSubscription);
+if (btnBannerUpgrade) btnBannerUpgrade.addEventListener('click', upgradeSubscription);
+btnBannerClose.addEventListener('click', hideQuotaBanner);
 
 function escapeHtml(str) {
   const div = document.createElement('div');
@@ -203,6 +312,7 @@ startBtn.addEventListener('click', async () => {
     await player.loadPlan(text, null);
   }
   player.start();
+  refreshUsage(); // throttled; keeps the usage badge current during reading
 });
 
 pauseBtn.addEventListener('click', () => {
@@ -368,6 +478,9 @@ btnLogout.addEventListener('click', () => {
   setToken(null);
   currentUser = null;
   player.currentTextId = null;
+  lastUsage = null;
+  usageFetchAt = 0;
+  hideQuotaBanner();
   updateAuthUI();
 });
 
@@ -416,6 +529,7 @@ async function loadLibrary() {
         inputEl.value = item.content;
         closeModals();
         await player.loadPlan(item.content, item.id, item.last_position || 0);
+        refreshUsage();
       });
 
       el.querySelector('.btn-del').addEventListener('click', async () => {
